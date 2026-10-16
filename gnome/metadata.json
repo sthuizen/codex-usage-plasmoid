@@ -1,0 +1,8 @@
+{
+  "uuid": "codex-usage@thenailedone",
+  "name": "Codex Usage",
+  "description": "Codex subscription allowance, reset times, credits and ChatGPT sign-in in the GNOME top bar.",
+  "shell-version": ["51"],
+  "version": 1,
+  "settings-schema": "org.gnome.shell.extensions.codex-usage"
+}

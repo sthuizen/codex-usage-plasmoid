@@ -1,0 +1,7 @@
+<schemalist>
+  <schema id="org.gnome.shell.extensions.codex-usage" path="/org/gnome/shell/extensions/codex-usage/">
+    <key name="refresh-minutes" type="i"><default>5</default><range min="1" max="1440"/><summary>Refresh interval in minutes</summary></key>
+    <key name="appearance" type="s"><default>'auto'</default><choices><choice value="auto"/><choice value="dark"/><choice value="light"/></choices><summary>Indicator appearance</summary></key>
+    <key name="codex-path" type="s"><default>''</default><summary>Optional absolute path to Codex</summary></key>
+  </schema>
+</schemalist>

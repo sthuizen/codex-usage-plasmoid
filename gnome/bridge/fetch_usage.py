@@ -1,0 +1,344 @@
+#!/usr/bin/env python3
+"""Codex account bridge for the Codex Usage GNOME extension.
+
+The bridge speaks to ``codex app-server`` over JSONL. It never reads Codex
+credential files and never returns access tokens to the extension.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import select
+import signal
+import math
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+
+APP_VERSION = "1.0.0"
+CLIENT_INFO = {
+    "name": "gnome_codex_usage",
+    "title": "Codex Usage for GNOME",
+    "version": APP_VERSION,
+}
+
+
+class BridgeError(RuntimeError):
+    """A user-displayable bridge failure."""
+
+
+class CodexNotFound(BridgeError):
+    """Raised when no supported Codex executable can be located."""
+
+
+def emit(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, separators=(",", ":")), flush=True)
+
+
+def remaining(
+    window: dict[str, Any] | None,
+    *,
+    limit_id: str = "",
+    limit_name: str = "",
+    slot: str = "",
+) -> dict[str, Any] | None:
+    if not window:
+        return None
+    raw_used = window.get("usedPercent")
+    try:
+        value = float(raw_used) if raw_used is not None else float("nan")
+        used = max(0, min(100, int(round(value)))) if math.isfinite(value) else None
+    except (TypeError, ValueError):
+        used = None
+    return {
+        "id": f"{limit_id}:{slot}" if limit_id and slot else slot or limit_id,
+        "limitId": limit_id,
+        "limitName": limit_name,
+        "slot": slot,
+        "usedPercent": used,
+        "remainingPercent": 100 - used if used is not None else None,
+        "windowDurationMins": window.get("windowDurationMins"),
+        "resetsAt": window.get("resetsAt"),
+    }
+
+
+def executable_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    override = os.environ.get("CODEX_USAGE_CODEX_BIN")
+    if override:
+        candidates.append(Path(override).expanduser())
+    on_path = shutil.which("codex")
+    if on_path:
+        candidates.append(Path(on_path))
+    candidates.extend(
+        [
+            Path.home() / ".local/bin/codex",
+            Path("/usr/local/bin/codex"),
+            Path("/usr/bin/codex"),
+            Path("/usr/lib/chatgpt/resources/codex"),
+        ]
+    )
+    return candidates
+
+
+def codex_executable() -> str:
+    seen: set[Path] = set()
+    for candidate in executable_candidates():
+        resolved = candidate.resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise CodexNotFound("Codex is not installed or could not be found")
+
+
+class AppServer:
+    """Minimal synchronous client for the local Codex app server."""
+
+    def __init__(self, executable: str, timeout_seconds: float = 20.0) -> None:
+        self.timeout_seconds = timeout_seconds
+        self._read_buffer = b""
+        self.process = subprocess.Popen(
+            [executable, "app-server", "--stdio"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
+
+    def __enter__(self) -> "AppServer":
+        try:
+            self.send({"method": "initialize", "id": 0,
+                       "params": {"clientInfo": CLIENT_INFO}})
+            self.wait_for_id(0)
+            self.send({"method": "initialized", "params": {}})
+            return self
+        except BaseException:
+            self.__exit__()
+            raise
+
+    def __exit__(self, *_: object) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=2)
+        for stream in (self.process.stdin, self.process.stdout):
+            if stream is not None:
+                stream.close()
+
+    def send(self, message: dict[str, Any]) -> None:
+        if self.process.stdin is None:
+            raise BridgeError("Codex app server input is unavailable")
+        self.process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+        self.process.stdin.flush()
+
+    def read_message(self, timeout_seconds: float | None = None) -> dict[str, Any]:
+        if self.process.stdout is None:
+            raise BridgeError("Codex app server output is unavailable")
+        timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
+        # Read the pipe directly: TextIOWrapper read-ahead can hide complete
+        # messages from select(), causing false timeouts after notifications.
+        deadline = time.monotonic() + timeout
+        while b"\n" not in self._read_buffer:
+            readable, _, _ = select.select(
+                [self.process.stdout], [], [], max(0.0, deadline - time.monotonic())
+            )
+            if not readable:
+                raise TimeoutError("Timed out while waiting for Codex")
+            chunk = os.read(self.process.stdout.fileno(), 65536)
+            if not chunk:
+                raise BridgeError("Codex app server closed unexpectedly")
+            self._read_buffer += chunk
+        line, self._read_buffer = self._read_buffer.split(b"\n", 1)
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError as error:
+            raise BridgeError("Codex returned an invalid response") from error
+
+    def wait_for_id(self, request_id: int) -> dict[str, Any]:
+        deadline = time.monotonic() + self.timeout_seconds
+        while time.monotonic() < deadline:
+            message = self.read_message(max(0.0, deadline - time.monotonic()))
+            if message.get("id") != request_id:
+                continue
+            if message.get("error"):
+                detail = message["error"].get("message", "Codex returned an error")
+                raise BridgeError(detail)
+            return message.get("result") or {}
+        raise TimeoutError("Timed out while waiting for Codex")
+
+    def request(self, method: str, request_id: int, params: dict[str, Any]) -> dict[str, Any]:
+        self.send({"method": method, "id": request_id, "params": params})
+        return self.wait_for_id(request_id)
+
+
+def normalise_limits(response: dict[str, Any]) -> dict[str, Any]:
+    legacy_limits = response.get("rateLimits") or {}
+    mapped_limits = response.get("rateLimitsByLimitId") or {}
+    if isinstance(mapped_limits, dict) and mapped_limits:
+        buckets = [value for value in mapped_limits.values() if isinstance(value, dict)]
+    else:
+        buckets = [legacy_limits] if legacy_limits else []
+
+    windows: list[dict[str, Any]] = []
+    for bucket in buckets:
+        limit_id = str(bucket.get("limitId") or "")
+        limit_name = str(bucket.get("limitName") or "")
+        for slot in ("primary", "secondary"):
+            window = remaining(
+                bucket.get(slot),
+                limit_id=limit_id,
+                limit_name=limit_name,
+                slot=slot,
+            )
+            if window is not None:
+                windows.append(window)
+
+    limits = legacy_limits or (buckets[0] if buckets else {})
+    credits = limits.get("credits") or {}
+    reset_credits = response.get("rateLimitResetCredits") or {}
+    return {
+        "ok": True,
+        "state": "ready",
+        "message": "" if windows else "Codex reported no active usage windows",
+        "fetchedAt": int(time.time()),
+        "windows": windows,
+        "planType": limits.get("planType"),
+        "credits": {
+            "hasCredits": bool(credits.get("hasCredits", False)),
+            "unlimited": bool(credits.get("unlimited", False)),
+            "balance": str(credits.get("balance", "0")),
+        },
+        "resetCredits": int(reset_credits.get("availableCount", 0) or 0),
+        "rateLimitReachedType": limits.get("rateLimitReachedType"),
+        "spendControlReached": bool(limits.get("spendControlReached", False)),
+    }
+
+
+def account_state(server: AppServer) -> dict[str, Any]:
+    account_response = server.request("account/read", 1, {"refreshToken": False})
+    account = account_response.get("account")
+    if account is None:
+        return {
+            "ok": False,
+            "state": "auth_required",
+            "message": "Sign in to Codex with ChatGPT to read usage limits",
+        }
+    if account.get("type") not in {"chatgpt", "chatgptAuthTokens"}:
+        return {
+            "ok": False,
+            "state": "unsupported_auth",
+            "message": "Codex is not signed in with a ChatGPT account",
+        }
+    return {"ok": True, "state": "authenticated"}
+
+
+def read_limits() -> dict[str, Any]:
+    executable = codex_executable()
+    with AppServer(executable) as server:
+        state = account_state(server)
+        if not state["ok"]:
+            return state
+        response = server.request("account/rateLimits/read", 2, {})
+        return normalise_limits(response)
+
+
+def safe_auth_url(value: str) -> str:
+    parsed = urlparse(value)
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not (
+        hostname == "chatgpt.com" or hostname.endswith(".chatgpt.com")
+    ):
+        raise BridgeError("Codex returned an unexpected sign-in address")
+    return value
+
+
+def open_browser(url: str) -> None:
+    opener = shutil.which("xdg-open") or shutil.which("kioclient6")
+    if not opener:
+        raise BridgeError("No desktop web browser opener was found")
+    command = [opener, url]
+    if Path(opener).name == "kioclient6":
+        command = [opener, "exec", url]
+    subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def sign_in(timeout_seconds: float = 300.0) -> dict[str, Any]:
+    executable = codex_executable()
+    with AppServer(executable, timeout_seconds=20.0) as server:
+        state = account_state(server)
+        if state["ok"]:
+            return {"ok": True, "state": "login_complete"}
+
+        login = server.request(
+            "account/login/start",
+            3,
+            {
+                "type": "chatgpt",
+                "useHostedLoginSuccessPage": True,
+                "appBrand": "codex",
+            },
+        )
+        auth_url = safe_auth_url(str(login.get("authUrl", "")))
+        login_id = login.get("loginId")
+        open_browser(auth_url)
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            message = server.read_message(max(0.0, deadline - time.monotonic()))
+            if message.get("method") != "account/login/completed":
+                continue
+            params = message.get("params") or {}
+            if login_id and params.get("loginId") != login_id:
+                continue
+            if params.get("success"):
+                return {"ok": True, "state": "login_complete"}
+            raise BridgeError(params.get("error") or "ChatGPT sign-in was not completed")
+        raise TimeoutError("ChatGPT sign-in timed out")
+
+
+def main(argv: list[str]) -> int:
+    action = argv[1] if len(argv) > 1 else "usage"
+    try:
+        if action == "usage":
+            emit(read_limits())
+        elif action == "login":
+            emit(sign_in())
+        else:
+            raise BridgeError(f"Unknown action: {action}")
+        return 0
+    except CodexNotFound as error:
+        emit({"ok": False, "state": "codex_missing", "message": str(error)})
+        return 2
+    except Exception as error:
+        emit({"ok": False, "state": "error", "message": str(error)})
+        return 1
+
+
+def terminate(_signum: int, _frame: object) -> None:
+    # Unwind the context manager so disabling the extension reaps Codex too.
+    raise SystemExit(0)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, terminate)
+    sys.exit(main(sys.argv))
+
