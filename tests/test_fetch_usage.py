@@ -3,6 +3,7 @@ import os
 import pathlib
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 
 HELPER = pathlib.Path(__file__).parents[1] / "package/contents/code/fetch_usage.py"
@@ -12,6 +13,64 @@ SPEC.loader.exec_module(MODULE)
 
 
 class FetchUsageTests(unittest.TestCase):
+    def test_initialization_failures_clean_up_process(self):
+        for stage, error in (
+            ("initialize", BrokenPipeError("closed input")),
+            ("response", TimeoutError("initialization timed out")),
+            ("response", MODULE.BridgeError("initialization rejected")),
+            ("initialized", BrokenPipeError("closed input")),
+        ):
+            with self.subTest(stage=stage, error=type(error).__name__):
+                process = mock.Mock()
+                process.poll.return_value = None
+                with mock.patch.object(MODULE.subprocess, "Popen", return_value=process):
+                    server = MODULE.AppServer("codex")
+                send_effect = {
+                    "initialize": [error],
+                    "response": None,
+                    "initialized": [None, error],
+                }[stage]
+                with (
+                    mock.patch.object(server, "send", side_effect=send_effect),
+                    mock.patch.object(
+                        server, "wait_for_id",
+                        side_effect=error if stage == "response" else None,
+                    ),
+                    self.assertRaises(type(error)) as caught,
+                ):
+                    with server:
+                        self.fail("Initialization should fail before entering the body")
+                self.assertIs(caught.exception, error)
+                process.terminate.assert_called_once_with()
+                process.wait.assert_called_once_with(timeout=2)
+                process.kill.assert_not_called()
+                process.stdin.close.assert_called_once_with()
+                process.stdout.close.assert_called_once_with()
+
+    def test_cleanup_kills_process_if_termination_times_out(self):
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.wait.side_effect = [MODULE.subprocess.TimeoutExpired("codex", 2), 0]
+        with mock.patch.object(MODULE.subprocess, "Popen", return_value=process):
+            server = MODULE.AppServer("codex")
+        server.__exit__()
+        process.terminate.assert_called_once_with()
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.call_args_list, [mock.call(timeout=2)] * 2)
+        process.stdin.close.assert_called_once_with()
+        process.stdout.close.assert_called_once_with()
+
+    def test_cleanup_closes_pipes_for_exited_process(self):
+        process = mock.Mock()
+        process.poll.return_value = 0
+        with mock.patch.object(MODULE.subprocess, "Popen", return_value=process):
+            server = MODULE.AppServer("codex")
+        server.__exit__()
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+        process.stdin.close.assert_called_once_with()
+        process.stdout.close.assert_called_once_with()
+
     def test_multiple_messages_in_one_pipe_write(self):
         read_fd, write_fd = os.pipe()
         try:

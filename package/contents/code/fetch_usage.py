@@ -109,25 +109,35 @@ class AppServer:
         )
 
     def __enter__(self) -> "AppServer":
-        self.send(
-            {
-                "method": "initialize",
-                "id": 0,
-                "params": {"clientInfo": CLIENT_INFO},
-            }
-        )
-        self.wait_for_id(0)
-        self.send({"method": "initialized", "params": {}})
+        try:
+            self.send(
+                {
+                    "method": "initialize",
+                    "id": 0,
+                    "params": {"clientInfo": CLIENT_INFO},
+                }
+            )
+            self.wait_for_id(0)
+            self.send({"method": "initialized", "params": {}})
+        except BaseException:
+            self.__exit__()
+            raise
         return self
 
     def __exit__(self, *_: object) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=2)
+        try:
+            if self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=2)
+        finally:
+            if self.process.stdin is not None:
+                self.process.stdin.close()
+            if self.process.stdout is not None:
+                self.process.stdout.close()
 
     def send(self, message: dict[str, Any]) -> None:
         if self.process.stdin is None:

@@ -211,6 +211,16 @@ PlasmoidItem {
             return
         }
         if (!payload.ok) {
+            if (accountState === "auth_required" || accountState === "unsupported_auth"
+                    || accountState === "codex_missing") {
+                usageWindows = []
+                fetchedAt = 0
+                planType = ""
+                creditBalance = "0"
+                resetCredits = 0
+                accountStatus = i18n("Usage unavailable")
+                errorMessage = ""
+            }
             if (accountState === "error")
                 errorMessage = payload.message || i18n("Unknown error")
             return
