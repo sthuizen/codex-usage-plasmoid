@@ -45,9 +45,9 @@ Download the `.plasmoid` file from the [latest release](https://github.com/sthui
 kpackagetool6 --type Plasma/Applet --install codex-usage-*.plasmoid
 ```
 
-Right-click your Plasma panel, enter **Edit Mode**, open **Add Widgets…**, and add **Codex Usage**. Click the widget to see full usage details or sign in if needed. It refreshes automatically every five minutes by default. In the popup, change **Refresh every … minutes** to save a different interval (1–1,440 minutes). Changes take effect immediately and persist for that widget. Press Enter after typing a value.
+Right-click your Plasma panel, enter **Edit Mode**, open **Add Widgets…**, and add **Codex Usage**. Click the widget to see full usage details or sign in if needed. It refreshes automatically every five minutes by default. Right-click the widget and choose **Configure Codex Usage… → General** to change **Refresh every … minutes** (1–1,440 minutes). Click **Apply** or **OK** to save changes for that widget.
 
-Choose **Appearance → Auto** in the popup to follow KDE’s current theme and live colour changes, or select **Dark** or **Light** to override this widget only. The panel indicator gets a matching background in either forced mode so it stays legible even on an opposite-colour panel. Auto is the default.
+In the same configuration page, choose **Appearance → Auto** to follow KDE’s current theme and live colour changes, or select **Dark** or **Light** to override this widget only. The panel indicator gets a matching background in either forced mode so it stays legible even on an opposite-colour panel. Auto is the default.
 
 Clock icons identify windows shorter than a day; calendar icons identify day/week windows. Healthy short windows use the theme’s link colour and longer windows use its positive colour. Amber/red low-remaining warnings take priority. Reset and update times follow your local timezone and time format; nearby resets show Today or Tomorrow, while later ones show a full date.
 

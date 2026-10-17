@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls.Basic as Basic
 import QtQuick.Layouts
 
 import org.kde.kirigami as Kirigami
@@ -369,9 +368,17 @@ PlasmoidItem {
     }
 
     fullRepresentation: Item {
+        id: popup
+
+        readonly property real heightLimit: root.availableScreenRect.height > 0
+            ? root.availableScreenRect.height * 0.8 : Kirigami.Units.gridUnit * 30
+
+        implicitHeight: Math.min(popupContents.implicitHeight, heightLimit)
         Layout.minimumWidth: Kirigami.Units.gridUnit * 19
         Layout.preferredWidth: Kirigami.Units.gridUnit * 21
-        Layout.minimumHeight: Kirigami.Units.gridUnit * 26
+        Layout.minimumHeight: implicitHeight
+        Layout.preferredHeight: implicitHeight
+        Layout.maximumHeight: implicitHeight
         Kirigami.Theme.inherit: false
         Kirigami.Theme.backgroundColor: root.Kirigami.Theme.backgroundColor
         Kirigami.Theme.textColor: root.Kirigami.Theme.textColor
@@ -390,8 +397,31 @@ PlasmoidItem {
             radius: Kirigami.Units.smallSpacing
         }
 
-        ColumnLayout {
+        // ScrollView consumes right-clicks instead of passing them to Plasma's context menu.
+        Flickable {
+            id: popupFlickable
             anchors.fill: parent
+            contentWidth: width
+            contentHeight: popupContents.implicitHeight
+            flickableDirection: Flickable.VerticalFlick
+            boundsBehavior: Flickable.StopAtBounds
+            clip: true
+            focus: true
+            activeFocusOnTab: true
+
+            Keys.onUpPressed: popupScrollBar.decrease()
+            Keys.onDownPressed: popupScrollBar.increase()
+
+            PlasmaComponents.ScrollBar.vertical: PlasmaComponents.ScrollBar {
+                id: popupScrollBar
+                policy: PlasmaComponents.ScrollBar.AsNeeded
+            }
+        }
+
+        ColumnLayout {
+            id: popupContents
+            parent: popupFlickable.contentItem
+            width: popupFlickable.width - (popupScrollBar.visible ? popupScrollBar.width : 0)
             spacing: Kirigami.Units.largeSpacing
 
             RowLayout {
@@ -443,9 +473,8 @@ PlasmoidItem {
                 visible: !root.hasData
                 spacing: Kirigami.Units.largeSpacing
                 Layout.fillWidth: true
-                Layout.fillHeight: true
-
-                Item { Layout.fillHeight: true }
+                Layout.topMargin: Kirigami.Units.largeSpacing
+                Layout.bottomMargin: Kirigami.Units.largeSpacing
 
                 Kirigami.Icon {
                     source: root.accountState === "codex_missing" ? "application-x-executable" : "user-identity"
@@ -488,8 +517,6 @@ PlasmoidItem {
                     Layout.alignment: Qt.AlignHCenter
                     onClicked: root.refresh()
                 }
-
-                Item { Layout.fillHeight: true }
             }
 
             GridLayout {
@@ -503,21 +530,30 @@ PlasmoidItem {
                 PlasmaComponents.Label {
                     text: root.planText()
                     font.weight: Font.DemiBold
-                    Layout.alignment: Qt.AlignRight
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    horizontalAlignment: Text.AlignRight
+                    wrapMode: Text.Wrap
                 }
 
                 PlasmaComponents.Label { text: i18n("Additional credits") }
                 PlasmaComponents.Label {
                     text: root.creditBalance
                     font.weight: Font.DemiBold
-                    Layout.alignment: Qt.AlignRight
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    horizontalAlignment: Text.AlignRight
+                    wrapMode: Text.Wrap
                 }
 
                 PlasmaComponents.Label { text: i18n("Reset credits") }
                 PlasmaComponents.Label {
                     text: root.resetCredits.toString()
                     font.weight: Font.DemiBold
-                    Layout.alignment: Qt.AlignRight
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    horizontalAlignment: Text.AlignRight
+                    wrapMode: Text.Wrap
                 }
 
                 PlasmaComponents.Label { text: i18n("Status") }
@@ -527,7 +563,10 @@ PlasmoidItem {
                         ? Kirigami.Theme.negativeTextColor
                         : Kirigami.Theme.positiveTextColor
                     font.weight: Font.DemiBold
-                    Layout.alignment: Qt.AlignRight
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    horizontalAlignment: Text.AlignRight
+                    wrapMode: Text.Wrap
                 }
             }
 
@@ -537,56 +576,6 @@ PlasmoidItem {
                 color: Kirigami.Theme.negativeTextColor
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
-            }
-
-            Item { Layout.fillHeight: true }
-
-            RowLayout {
-                Layout.fillWidth: true
-                PlasmaComponents.Label {
-                    text: i18n("Appearance")
-                    Layout.fillWidth: true
-                }
-                Basic.ComboBox {
-                    palette.window: root.Kirigami.Theme.backgroundColor
-                    palette.base: root.Kirigami.Theme.backgroundColor
-                    palette.button: root.Kirigami.Theme.backgroundColor
-                    palette.text: root.Kirigami.Theme.textColor
-                    palette.buttonText: root.Kirigami.Theme.textColor
-                    palette.windowText: root.Kirigami.Theme.textColor
-                    palette.highlight: root.Kirigami.Theme.linkColor
-                    palette.highlightedText: root.darkAppearance ? "#232629" : "#ffffff"
-                    model: [i18n("Auto"), i18n("Dark"), i18n("Light")]
-                    currentIndex: ["auto", "dark", "light"].indexOf(root.appearance)
-                    onActivated: index => Plasmoid.configuration.appearance = ["auto", "dark", "light"][index]
-                    Accessible.name: i18n("Widget appearance")
-                }
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                PlasmaComponents.Label {
-                    text: i18n("Refresh every")
-                    Layout.fillWidth: true
-                }
-                Basic.SpinBox {
-                    palette.window: root.Kirigami.Theme.backgroundColor
-                    palette.base: root.Kirigami.Theme.backgroundColor
-                    palette.button: root.Kirigami.Theme.backgroundColor
-                    palette.text: root.Kirigami.Theme.textColor
-                    palette.buttonText: root.Kirigami.Theme.textColor
-                    palette.windowText: root.Kirigami.Theme.textColor
-                    palette.highlight: root.Kirigami.Theme.linkColor
-                    palette.highlightedText: root.darkAppearance ? "#232629" : "#ffffff"
-                    id: refreshInterval
-                    from: 1
-                    to: 1440
-                    editable: true
-                    value: root.refreshMinutes
-                    Accessible.name: i18n("Automatic refresh interval in minutes")
-                    onValueModified: Plasmoid.configuration.refreshIntervalMinutes = value
-                }
-                PlasmaComponents.Label { text: i18n("minutes") }
             }
 
             PlasmaComponents.Label {
